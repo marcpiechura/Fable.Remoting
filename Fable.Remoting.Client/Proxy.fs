@@ -51,6 +51,8 @@ module Proxy =
            CustomHeaders          : Map<string, HttpRequestHeaders list>
            Endpoint               : string option
            Headers                : HttpRequestHeaders list
+           StaticToken            : string option
+           TokenCallback          : ((unit -> string option) * (unit -> Fable.Import.JS.Promise<string>)) option
            Builder                : (string -> string -> string)
         }
         with
@@ -65,6 +67,8 @@ module Proxy =
                                             ContentType "application/json; charset=utf8"
                                             Cookie Fable.Import.Browser.document.cookie
                                             ]
+                   StaticToken           = None
+                   TokenCallback         = None
                    Builder               = sprintf ("/%s/%s")
                 }
     [<Emit("$2[$0] = $1")>]
@@ -147,7 +151,22 @@ module Proxy =
             let data = 
                [ box arg0;box arg1;box arg2;box arg3;box arg4;box arg5;box arg6;box arg7;box arg8;box arg9;box arg10;box arg11;box arg12;box arg13;box arg14;box arg15 ] 
                |> List.take typeCount
-            promise {
+            promise {           
+
+                let! token = 
+                    options.StaticToken                
+                    |> Option.map Promise.lift
+                    |> Option.orElseWith (fun _ ->
+                        Option.map (fun t -> 
+                            let cached = fst t
+                            let aquire = snd t
+                            cached() |> Option.map Promise.lift |> Option.defaultWith (fun _ -> aquire ())
+                        ) options.TokenCallback
+                    )
+                    |> Option.defaultValue (Promise.lift "")                
+
+                let options = if token = "" then options else {options with Headers = (Authorization token) :: options.Headers}
+
                 // Send RPC POST request to the server
                 let requestProps = [
                     Body (unbox (toJson data))
@@ -161,9 +180,10 @@ module Proxy =
                 // use GlobalFetch.fetch to control error handling
                 let! response = GlobalFetch.fetch(RequestInfo.Url url, makeReqProps requestProps)
                 //let! response = Fetch.fetch url requestProps
-                let! jsonResponse = response.text()
+                let! jsonResponse = response.text()                    
+
                 let context = {
-                    Authorization = options.Headers |> Seq.tryPick (function (Authorization token) -> Some token | _ -> None)
+                    Authorization = if token = "" then None else Some token
                     Body=jsonResponse
                     ReturnType = returnType
                     Response = response}
@@ -257,7 +277,11 @@ module Proxy =
             /// Sets an authorization string to send with the request onto the Authorization header.
             [<CustomOperation("with_token")>]
             member __.WithToken(state,token) =
-                {state with Headers = (Authorization token)::state.Headers}
+                {state with StaticToken = Some token}
+            /// Sets an authorization string to send with the request onto the Authorization header.
+            [<CustomOperation("with_token_callback")>]
+            member __.WithTokenCallback(state,callback) =
+                {state with TokenCallback = Some callback}
             /// Alias for `use_route_builder`. Uses a custom route builder. By default, the route paths have the form `/{typeName}/{methodName}` when you use a custom route builder, you override this behaviour. A custom route builder is a function of type `typeName:string -> methodName:string -> string`.
             [<CustomOperation("with_builder")>]
             member __.WithBuilder(state,builder) =
